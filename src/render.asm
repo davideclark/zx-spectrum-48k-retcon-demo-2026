@@ -50,6 +50,15 @@ orb_rest_cy:    DEFB 0
 orb_sin:        DEFB 0   ; sin_tab[orbit_angle] for current letter
 orb_cos:        DEFB 0   ; cos for current letter orbit angle
 orb_phase_ptr:  DEFW 0   ; walks through orb_phase table (19 bytes)
+orb_blt_spr:        DEFW 0   ; sprite ptr for current letter (letter_sprites + L*160)
+ocb_prev_col:       DEFB 0   ; current letter's prev blit col (0xFF = off-screen)
+ocb_prev_sy:        DEFB 0   ; current letter's prev start screen y
+ocb_new_col:        DEFB 0   ; current letter's new blit col (0xFF = off-screen)
+ocb_new_sy:         DEFB 0   ; current letter's new start screen y
+orb_prev_col_ptr:   DEFW 0   ; walks orb_prev_col array
+orb_prev_sy_ptr:    DEFW 0   ; walks orb_prev_sy array
+orb_prev_col:       DEFS 19  ; per-letter prev blit col (0xFF = off-screen/skip)
+orb_prev_sy:        DEFS 19  ; per-letter prev start screen y (0xFF = off-screen/skip)
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; plot_pixel — screen OR sprite depending on sprite_mode
@@ -1132,6 +1141,130 @@ clear_orbit_bands:
     jp   clr_fixed_band ; tail call — clr_fixed_band's ret returns to our caller
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; orbit_clear_blit_letter — combined clear-prev + blit-new for one orbit letter.
+; For each of 40 rows: zero 4 bytes at prev position, OR 4 bytes at new position.
+; Eliminates the blank-screen gap that a separate clear pass would cause.
+; In:  ocb_prev_col/sy = prev position (0xFF col = skip clear)
+;      ocb_new_col/sy  = new position  (0xFF col = skip blit, still advance DE)
+;      orb_blt_spr     = sprite ptr for this letter
+; Out: DE = orb_blt_spr + 160
+; ─────────────────────────────────────────────────────────────────────────────
+; orbit_clear_prev_letter — zero the 4-byte column at prev position (pass 1 of 2).
+; All 19 letters are cleared before any blitting so adjacent letter data is safe.
+; In: ocb_prev_col (0-28 valid, 0xFF = skip), ocb_prev_sy (incremented each row)
+orbit_clear_prev_letter:
+    ld   b, 40
+ocl_outer:
+    push bc
+    ld   a, (ocb_prev_col)
+    cp   29                 ; 0xFF >= 29 → skip
+    jr   nc, ocl_skip
+    ld   a, (ocb_prev_sy)
+    cp   192
+    jr   nc, ocl_skip
+
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c
+
+    ld   a, (ocb_prev_col)
+    add  a, l
+    ld   l, a
+    jr   nc, ocl_nc
+    inc  h
+ocl_nc:
+    xor  a
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+
+ocl_skip:
+    ld   hl, ocb_prev_sy
+    inc  (hl)
+    pop  bc
+    djnz ocl_outer
+    ret
+
+; orbit_blit_new_letter — OR sprite at new position (pass 2 of 2).
+; In: ocb_new_col (0-28 valid, 0xFF = skip), ocb_new_sy, orb_blt_spr
+; Out: DE = orb_blt_spr + 160
+orbit_blit_new_letter:
+    ld   hl, (orb_blt_spr)
+    ex   de, hl             ; DE = sprite ptr
+
+    ld   b, 40
+obn_outer:
+    push bc
+    ld   a, (ocb_new_col)
+    cp   29
+    jr   nc, obn_skip
+    ld   a, (ocb_new_sy)
+    cp   192
+    jr   nc, obn_skip
+
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c
+
+    ld   a, (ocb_new_col)
+    add  a, l
+    ld   l, a
+    jr   nc, obn_nc
+    inc  h
+obn_nc:
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    jr   obn_done
+
+obn_skip:
+    inc  de
+    inc  de
+    inc  de
+    inc  de
+
+obn_done:
+    ld   hl, ocb_new_sy
+    inc  (hl)
+    pop  bc
+    djnz obn_outer
+    ret
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; draw_orbit_frame — draw all 19 letters orbiting their rest centres
 ; Each letter uses: orbit_angle = (orb_base_angle + orb_phase[letter]) & 255
 ;   orbit_cx = rest_cx + (radius * cos(orbit_angle)) >> 7
@@ -1140,36 +1273,54 @@ clear_orbit_bands:
 ; orb_base_angle increments by 2 each frame for ~1.2 orbits over 150 frames.
 ; ─────────────────────────────────────────────────────────────────────────────
 draw_orbit_frame:
-    ; radius = orb_scale[anim_frame] + 12
     ld   a, (anim_frame)
     ld   l, a
     ld   h, 0
     ld   de, orb_scale
     add  hl, de
     ld   a, (hl)
-    ld   (orb_radius), a     ; orb_scale starts at 0, ramps to 26 — no jump on entry
+    ld   (orb_radius), a
 
-    ; Identity rotation for letter shape (no spin during orbit)
-    xor  a
-    ld   (spin_sin), a
-    ld   a, 127
-    ld   (spin_cos), a
+    ; ── Pass 1: clear all 19 letters' previous positions ─────────────────────
+    ; All clears happen before any blits so adjacent sprites can't erase each other.
+    ld   hl, orb_prev_col
+    ld   (orb_prev_col_ptr), hl
+    ld   hl, orb_prev_sy
+    ld   (orb_prev_sy_ptr), hl
 
-    xor  a
-    ld   (sprite_mode), a
+    ld   b, 19
+dof_clear_loop:
+    push bc
+    ld   hl, (orb_prev_col_ptr)
+    ld   a, (hl)
+    ld   (ocb_prev_col), a
+    inc  hl
+    ld   (orb_prev_col_ptr), hl
+    ld   hl, (orb_prev_sy_ptr)
+    ld   a, (hl)
+    ld   (ocb_prev_sy), a
+    inc  hl
+    ld   (orb_prev_sy_ptr), hl
+    call orbit_clear_prev_letter
+    pop  bc
+    djnz dof_clear_loop
 
-    ld   hl, letter_shapes
-    ld   (dar_shapes), hl
+    ; ── Pass 2: compute new positions, blit, update prev arrays ──────────────
     ld   hl, rest_pos
     ld   (dar_pos), hl
     ld   hl, orb_phase
     ld   (orb_phase_ptr), hl
+    ld   hl, letter_sprites
+    ld   (orb_blt_spr), hl
+    ld   hl, orb_prev_col
+    ld   (orb_prev_col_ptr), hl
+    ld   hl, orb_prev_sy
+    ld   (orb_prev_sy_ptr), hl
 
     ld   b, 19
-dof_loop:
+dof_blit_loop:
     push bc
 
-    ; Load this letter's rest position
     ld   hl, (dar_pos)
     ld   a, (hl)
     ld   (orb_rest_cx), a
@@ -1179,17 +1330,15 @@ dof_loop:
     inc  hl
     ld   (dar_pos), hl
 
-    ; orbit_angle = (orb_base_angle + orb_phase[letter]) & 255
     ld   hl, (orb_phase_ptr)
     ld   a, (hl)
     inc  hl
     ld   (orb_phase_ptr), hl
-    ld   c, a                ; C = orb_phase[letter]
+    ld   c, a
     ld   a, (orb_base_angle)
-    add  a, c                ; 8-bit add wraps naturally to &255
-    ld   c, a                ; C = orbit_angle
+    add  a, c
+    ld   c, a
 
-    ; orb_sin = sin_tab[orbit_angle]
     ld   l, a
     ld   h, 0
     ld   de, sin_tab
@@ -1197,7 +1346,6 @@ dof_loop:
     ld   a, (hl)
     ld   (orb_sin), a
 
-    ; orb_cos = sin_tab[(orbit_angle + 64) & 255]
     ld   a, c
     add  a, 64
     ld   l, a
@@ -1207,7 +1355,6 @@ dof_loop:
     ld   a, (hl)
     ld   (orb_cos), a
 
-    ; orbit_cx = rest_cx + (radius * orb_cos) >> 7
     ld   a, (orb_radius)
     ld   b, a
     ld   a, (orb_cos)
@@ -1218,13 +1365,12 @@ dof_loop:
     ld   c, a
     ld   a, h
     add  a, a
-    or   c               ; A = orbit_delta_x (signed, now in unsigned byte)
+    or   c
     ld   d, a
     ld   a, (orb_rest_cx)
     add  a, d
     ld   (spin_cx), a
 
-    ; orbit_cy = rest_cy + (radius * orb_sin) >> 7
     ld   a, (orb_radius)
     ld   b, a
     ld   a, (orb_sin)
@@ -1235,20 +1381,52 @@ dof_loop:
     ld   c, a
     ld   a, h
     add  a, a
-    or   c               ; A = orbit_delta_y
+    or   c
     ld   d, a
     ld   a, (orb_rest_cy)
     add  a, d
     ld   (spin_cy), a
 
-    call draw_rot_letter
+    ; Compute new col (0xFF = off-screen)
+    ld   a, (spin_cx)
+    srl  a
+    srl  a
+    srl  a
+    sub  2
+    jp   m, dof2_col_off
+    cp   29
+    jr   nc, dof2_col_off
+    ld   (ocb_new_col), a
+    jr   dof2_col_done
+dof2_col_off:
+    ld   a, 0xFF
+    ld   (ocb_new_col), a
+dof2_col_done:
+    ld   a, (spin_cy)
+    sub  20
+    ld   (ocb_new_sy), a
+
+    ; Store new col/sy into prev arrays (ready for next frame's clear pass)
+    ld   hl, (orb_prev_col_ptr)
+    ld   a, (ocb_new_col)
+    ld   (hl), a
+    inc  hl
+    ld   (orb_prev_col_ptr), hl
+    ld   hl, (orb_prev_sy_ptr)
+    ld   a, (ocb_new_sy)
+    ld   (hl), a
+    inc  hl
+    ld   (orb_prev_sy_ptr), hl
+
+    call orbit_blit_new_letter
+    ex   de, hl
+    ld   (orb_blt_spr), hl
 
     pop  bc
-    djnz dof_loop
+    dec  b
+    jp   nz, dof_blit_loop
 
-    ; Advance base angle by 2 per display frame (~1.2 full orbits in 150 frames)
     ld   a, (orb_base_angle)
     add  a, 2
     ld   (orb_base_angle), a
-
     ret

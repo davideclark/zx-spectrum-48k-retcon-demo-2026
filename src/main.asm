@@ -65,10 +65,17 @@ spin_done:
         ld      (anim_frame), a
         ld      a, 2
         ld      (phase), a
+        call    clear_orbit_bands       ; wipe spin-drawn letters before first orbit frame
+        ld      hl, orb_prev_col        ; initialise per-letter prev arrays to 0xFF
+        ld      b, 38                   ; 19 col bytes + 19 sy bytes (consecutive)
+        ld      a, 0xFF
+spin_done_init:
+        ld      (hl), a
+        inc     hl
+        djnz    spin_done_init
         jr      main_loop
 
 do_orbit:
-        call    clear_orbit_bands
         call    draw_orbit_frame
         ld      a, (anim_frame)
         cp      149

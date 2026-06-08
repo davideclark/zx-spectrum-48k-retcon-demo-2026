@@ -1,0 +1,11 @@
+# Generated build output
+build/
+
+# Large model files (~488 MB)
+models/
+
+# Generated vector database
+vectors.db
+
+# Claude Code local settings
+.claude/

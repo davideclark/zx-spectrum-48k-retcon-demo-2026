@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Welcome To RetCon 2026 — Inspired by a 1995 Delphi Demo</title>
+<style>
+  body { background: #1a1a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; font-family: sans-serif; }
+  canvas { background: #000; border-radius: 8px; }
+  #controls { display: flex; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; justify-content: center; }
+  #status { color: #888; font-size: 13px; margin-bottom: 8px; }
+  button { padding: 6px 14px; font-size: 13px; border-radius: 6px; border: 1px solid #555; background: #2a2a2a; color: #ccc; cursor: pointer; }
+  button:hover { background: #3a3a3a; }
+  button.active { background: #1a4a7a; color: #7ab8f5; border-color: #4a88c5; }
+</style>
+</head>
+<body>
+
+<canvas id="gfx-canvas" width="660" height="380"></canvas>
+<div id="controls">
+  <button class="active" id="btn1" onclick="startPart(1)">Part 1 — scroll</button>
+  <button id="btn2" onclick="startPart(2)">Part 2 — spin</button>
+  <button id="btn3" onclick="startPart(3)">Part 3 — orbit</button>
+  <button id="btnLoop" onclick="toggleLoop()">Loop all</button>
+</div>
+<div id="status">Part 1 — letters scrolling down</div>
+
+<script>
+// ============================================================
+// Welcome To RetCon 2026
+// Inspired by a 1995 Borland Delphi graphics demo by D Clark
+// Recreated in JavaScript/Canvas, 2026
+//
+// Uses 3x3 homogeneous matrix transformations (scale, rotate,
+// translate) as the original Pascal code did.
+//
+// Three animation parts with smooth eased transitions:
+//   Part 1 — two lines of text scroll down from off screen
+//   Part 2 — each letter spins 360 degrees around its own centre
+//   Part 3 — each letter orbits its own centre with scaling
+//
+// All animation is delta-time based for constant speed regardless
+// of frame rate. Token system ensures clean phase switching.
+// ============================================================
+
+const canvas = document.getElementById('gfx-canvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+// ---- 3x3 Homogeneous matrix operations ----------------------
+
+function mat3Identity() {
+  return [[1,0,0],[0,1,0],[0,0,1]];
+}
+
+function mat3Mul(a, b) {
+  const r = [[0,0,0],[0,0,0],[0,0,0]];
+  for (let i=0; i<3; i++)
+    for (let j=0; j<3; j++)
+      for (let k=0; k<3; k++)
+        r[i][j] += a[i][k] * b[k][j];
+  return r;
+}
+
+function mat3TransformPts(m, pts) {
+  return pts.map(([x,y]) => [
+    m[0][0]*x + m[0][1]*y + m[0][2],
+    m[1][0]*x + m[1][1]*y + m[1][2]
+  ]);
+}
+
+// Scale around reference point (rx, ry)
+function scaleMat(sx, sy, rx, ry) {
+  let m = mat3Identity();
+  m[0][0] = sx;  m[0][2] = (1-sx)*rx;
+  m[1][1] = sy;  m[1][2] = (1-sy)*ry;
+  return m;
+}
+
+// Rotate by angle a (radians) around reference point (rx, ry)
+function rotateMat(a, rx, ry) {
+  const c = Math.cos(a), s = Math.sin(a);
+  let m = mat3Identity();
+  m[0][0] = c;  m[0][1] = -s;  m[0][2] = rx*(1-c) + ry*s;
+  m[1][0] = s;  m[1][1] =  c;  m[1][2] = ry*(1-c) - rx*s;
+  return m;
+}
+
+// Translate by (tx, ty)
+function translateMat(tx, ty) {
+  let m = mat3Identity();
+  m[0][2] = tx;  m[1][2] = ty;
+  return m;
+}
+
+// Bounding box centre of a point array
+function centreOf(pts) {
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  return [
+    (Math.min(...xs) + Math.max(...xs)) / 2,
+    (Math.min(...ys) + Math.max(...ys)) / 2
+  ];
+}
+
+// ---- Easing functions ---------------------------------------
+
+// Used for scroll and all transitions
+function easeInOut(t) { return t < 0.5 ? 2*t*t : -1 + (4-2*t)*t; }
+
+// Used for spin — accelerates away from rest so start is
+// visually immediate with no apparent pause
+function easeIn(t) { return t * t; }
+
+// ---- Animation speed constants (milliseconds) ---------------
+
+const FALL_DURATION  = 1400;
+const SPIN_DURATION  = 2000;
+const ORBIT_DURATION = 3000;
+const TRANS_DURATION =  700;
+
+// ---- Letter definitions (base coords in 100x100 space) ------
+// Each letter is 7 points forming a polyline.
+
+const BASE_LETTERS = {
+  W: [[10,10],[30,90],[50,50],[70,90],[90,10],[90,10],[90,10]],
+  E: [[80,10],[20,10],[20,50],[80,50],[20,50],[20,90],[80,90]],
+  L: [[20,10],[20,90],[80,90],[80,90],[80,90],[80,90],[80,90]],
+  C: [[80,10],[20,10],[20,90],[80,90],[80,90],[80,90],[80,90]],
+  O: [[80,10],[20,10],[20,90],[80,90],[80,10],[80,10],[80,10]],
+  M: [[10,90],[10,10],[50,60],[90,10],[90,90],[90,90],[90,90]],
+  T: [[20,10],[80,10],[50,10],[50,90],[50,90],[50,90],[50,90]],
+  R: [[20,90],[20,10],[80,10],[80,50],[20,50],[80,90],[80,90]],
+  N: [[20,90],[20,10],[80,90],[80,10],[80,10],[80,10],[80,10]],
+  2: [[20,10],[80,10],[80,50],[20,90],[80,90],[80,90],[80,90]],
+  6: [[80,10],[20,10],[20,90],[80,90],[80,50],[20,50],[20,50]],
+  0: [[20,10],[80,10],[80,90],[20,90],[20,10],[20,10],[20,10]],
+};
+
+// Two lines of text
+const LINE1 = ['W','E','L','C','O','M','E','T','O'];
+const LINE2 = ['R','E','T','C','O','N','2','0','2','6'];
+
+// Final resting Y positions for each line
+const REST_Y1 = H * 0.18;
+const REST_Y2 = H * 0.52;
+
+// How far off the top each line travels — enough to start fully
+// above the canvas regardless of line resting position
+const LINE1_TRAVEL = REST_Y1 + H * 0.25;
+const LINE2_TRAVEL = REST_Y2 + H * 0.25;
+
+// ---- Build letter objects -----------------------------------
+
+function buildLetters() {
+  const letters = [];
+
+  // Line 1 — 9 characters, spaced evenly across canvas width
+  const n1 = LINE1.length, hspace1 = W / (n1+1);
+  const sfx1 = hspace1 / 100, sfy1 = (H * 0.22) / 100;
+  LINE1.forEach((key, i) => {
+    const raw = BASE_LETTERS[key] || BASE_LETTERS.E;
+    const m = mat3Mul(
+      translateMat(hspace1*(i+1) - sfx1*50, REST_Y1),
+      scaleMat(sfx1, sfy1, 0, 0)
+    );
+    const base = mat3TransformPts(m, raw);
+    const [cx, cy] = centreOf(base);
+    letters.push({base, cx, cy, key, line:1});
+  });
+
+  // Line 2 — 10 characters, spaced evenly across canvas width
+  const n2 = LINE2.length, hspace2 = W / (n2+1);
+  const sfx2 = hspace2 / 100, sfy2 = (H * 0.22) / 100;
+  LINE2.forEach((key, i) => {
+    const raw = BASE_LETTERS[key] || BASE_LETTERS.E;
+    const m = mat3Mul(
+      translateMat(hspace2*(i+1) - sfx2*50, REST_Y2),
+      scaleMat(sfx2, sfy2, 0, 0)
+    );
+    const base = mat3TransformPts(m, raw);
+    const [cx, cy] = centreOf(base);
+    letters.push({base, cx, cy, key, line:2});
+  });
+
+  return letters;
+}
+
+const LTS = buildLetters();
+
+// ---- Per-part point calculators ----------------------------
+
+// Part 1: all letters on the same line share the same travel
+// distance so each line moves as a perfectly rigid unit —
+// no per-letter offsets, lines stay horizontally straight
+function fallPts(l, p) {
+  const travel = l.line === 1 ? LINE1_TRAVEL : LINE2_TRAVEL;
+  const dy = travel * (1 - easeInOut(p));
+  return l.base.map(([x,y]) => [x, y - dy]);
+}
+
+// Part 2: easeIn on angle so spin accelerates from rest
+// with no apparent pause at the start
+function part2Pts(l, p) {
+  return mat3TransformPts(
+    rotateMat(easeIn(p) * 2 * Math.PI, l.cx, l.cy),
+    l.base
+  );
+}
+
+// Part 3: each letter orbits its own centre with a small radius
+// Letters are evenly phase-offset around the orbit so they
+// don't all move in lockstep. Sine curve scale so size is
+// identical at start and end — no discontinuity on loop.
+function part3Pts(l, p, idx) {
+  const orbitR = Math.min(W,H) * 0.06;
+  const angle  = (p * 2 * Math.PI) + (idx / LTS.length) * 2 * Math.PI;
+  const sv     = 1 + 0.4 * Math.sin(p * Math.PI);
+  const ox = l.cx + orbitR * Math.cos(angle);
+  const oy = l.cy + orbitR * Math.sin(angle);
+  return mat3TransformPts(
+    mat3Mul(translateMat(ox - l.cx, oy - l.cy), scaleMat(sv, sv, l.cx, l.cy)),
+    l.base
+  );
+}
+
+// ---- Drawing -----------------------------------------------
+
+function drawBg() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawLetter(pts, colour) {
+  ctx.strokeStyle = colour;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i=1; i<pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
+}
+
+// Rainbow colour cycling with per-letter hue offset
+function colours(t, idx) {
+  return `hsl(${((t*180) + (idx*18)) % 360}, 100%, 60%)`;
+}
+
+// ---- Animation engine --------------------------------------
+// Token system: incrementing token invalidates all in-flight
+// rAF callbacks instantly when a new part starts or loop stops.
+
+let token = 0;
+let loopMode = false;
+
+function stopAnim() { token++; }
+function setStatus(t) { document.getElementById('status').textContent = t; }
+function setActive(p) {
+  [1,2,3].forEach(i =>
+    document.getElementById('btn'+i).classList.toggle('active', i===p)
+  );
+}
+
+// Core runner: wall-clock delta-time gives constant speed at any fps
+function runAnim(tk, duration, startProgress, getFramePts, onDone) {
+  const offset = startProgress * duration;
+  let startTime = null;
+  function frame(ts) {
+    if (token !== tk) return;
+    if (startTime === null) startTime = ts - offset;
+    const progress = Math.min((ts - startTime) / duration, 1);
+    drawBg();
+    LTS.forEach((l, i) =>
+      drawLetter(getFramePts(l, progress, i), colours(progress, i))
+    );
+    if (progress < 1) requestAnimationFrame(frame);
+    else requestAnimationFrame(() => { if (token === tk && onDone) onDone(); });
+  }
+  requestAnimationFrame(frame);
+}
+
+// Generic eased transition between two point states
+function runTransition(tk, fromFn, toFn, onDone) {
+  runAnim(tk, TRANS_DURATION, 0, (l, p, i) => {
+    const e = easeInOut(p);
+    const from = fromFn(l, i), to = toFn(l, i);
+    return from.map(([ax,ay], pi) => [
+      ax + (to[pi][0] - ax) * e,
+      ay + (to[pi][1] - ay) * e
+    ]);
+  }, onDone);
+}
+
+// ---- Individual phases -------------------------------------
+
+function animPart1(tk, done) {
+  setStatus('Part 1 — letters scrolling down');
+  setActive(1);
+  runAnim(tk, FALL_DURATION, 0, (l,p) => fallPts(l, p), done);
+}
+
+function animTransition1to2(tk, done) {
+  setStatus('Transitioning to spin...');
+  // part2Pts(l,0) = easeIn(0)*2π = 0 = base = resting position
+  // identical to end of scroll — seamless handoff, no jump
+  runTransition(tk, (l) => fallPts(l, 1), (l) => part2Pts(l, 0), done);
+}
+
+function animPart2(tk, done) {
+  setStatus('Part 2 — each letter spinning on its own centre');
+  setActive(2);
+  runAnim(tk, SPIN_DURATION, 0, (l,p) => part2Pts(l, p), done);
+}
+
+function animTransition2to3(tk, done) {
+  setStatus('Transitioning to orbit...');
+  runTransition(tk, (l) => part2Pts(l, 1), (l,i) => part3Pts(l, 0, i), done);
+}
+
+function animPart3(tk, done) {
+  setStatus('Part 3 — each letter orbiting its own centre');
+  setActive(3);
+  runAnim(tk, ORBIT_DURATION, 0, (l,p,i) => part3Pts(l, p, i), done);
+}
+
+function animTransition3to1(tk, done) {
+  setStatus('Transitioning back to start...');
+  // Eases to off-screen top (fallPts p=0) so part 1 picks up seamlessly
+  runTransition(tk, (l,i) => part3Pts(l, 1, i), (l) => fallPts(l, 0), done);
+}
+
+// ---- Loop and manual controls ------------------------------
+
+function startPart(p) {
+  stopAnim();
+  loopMode = false;
+  document.getElementById('btnLoop').classList.remove('active');
+  setActive(p);
+  const tk = token;
+  if (p===1) animPart1(tk, null);
+  else if (p===2) animPart2(tk, null);
+  else animPart3(tk, null);
+}
+
+function toggleLoop() {
+  loopMode = !loopMode;
+  document.getElementById('btnLoop').classList.toggle('active', loopMode);
+  if (loopMode) { stopAnim(); startLoop(); }
+  else stopAnim();
+}
+
+// Full explicit chain: 1 → trans → 2 → trans → 3 → trans → repeat
+function startLoop() {
+  if (!loopMode) return;
+  const tk = token;
+  animPart1(tk, () =>
+    animTransition1to2(tk, () =>
+      animPart2(tk, () =>
+        animTransition2to3(tk, () =>
+          animPart3(tk, () =>
+            animTransition3to1(tk, () => {
+              if (token === tk && loopMode) startLoop();
+            })
+          )
+        )
+      )
+    )
+  );
+}
+
+startPart(1);
+</script>
+</body>
+</html>

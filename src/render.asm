@@ -859,8 +859,7 @@ draw_orbit_frame:
     ld   de, orb_scale
     add  hl, de
     ld   a, (hl)
-    add  a, 12
-    ld   (orb_radius), a
+    ld   (orb_radius), a     ; orb_scale starts at 0, ramps to 26 — no jump on entry
 
     ; Identity rotation for letter shape (no spin during orbit)
     xor  a

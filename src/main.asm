@@ -73,9 +73,16 @@ do_orbit:
         call    draw_orbit_frame
         ld      a, (anim_frame)
         cp      149
-        jr      z, main_loop    ; hold at last orbit frame
+        jr      z, orbit_done
         inc     a
         ld      (anim_frame), a
+        jr      main_loop
+orbit_done:
+        xor     a
+        ld      (anim_frame), a     ; reset frame counter
+        ld      (phase), a          ; phase = 0 (scroll)
+        ld      (orb_base_angle), a ; reset orbit angle for next loop
+        call    clear_orbit_bands   ; wipe orbit pixels before scroll starts
         jr      main_loop
 
 lookup_scroll_y:

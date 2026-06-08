@@ -36,9 +36,8 @@ main_loop:
         jp      do_orbit
 
 do_scroll:
-        call    clear_bands
         call    lookup_scroll_y
-        call    blit_all_animated
+        call    scroll_clear_blit
         ld      a, (anim_frame)
         cp      69
         jr      z, scroll_done

@@ -383,49 +383,38 @@ pras_col_ptr: DEFW 0
 ; blit_all_animated — OR-blit all 19 sprites at animated Y positions
 ; All persistent state lives in memory vars; no push/pop DE confusion.
 ; ─────────────────────────────────────────────────────────────────────────────
-blt_spr:      DEFW 0   ; sprite byte pointer (walks through letter_sprites)
-blt_col:      DEFB 0   ; screen byte column for current letter
-blt_scy:      DEFB 0   ; current screen_y for each row
+; ── Stripe-blit working vars ─────────────────────────────────────────────────
+sba_y1:   DEFB 0   ; screen_y for line1 at current outer row
+sba_y2:   DEFB 0   ; screen_y for line2 at current outer row
+sba_scr1: DEFW 0   ; row_addr[sba_y1], 0 if off-screen
+sba_scr2: DEFW 0   ; row_addr[sba_y2], 0 if off-screen
+sba_colp: DEFW 0   ; walks sprite_blit_byte (reset each outer row)
+sba_spr:  DEFW 0   ; sprite row ptr: letter_sprites + outer_row*4
 
+; ─────────────────────────────────────────────────────────────────────────────
+; blit_all_animated — row-major (stripe) OR-blit of all 19 sprites.
+; Outer: 40 rows. Inner: 9 line1 letters, then 10 line2 letters.
+; row_addr looked up once per row per line (80 total vs 760); flicker changes
+; from "letters appearing left-to-right" to a top-down horizontal scan wipe.
+; ─────────────────────────────────────────────────────────────────────────────
 blit_all_animated:
+    ld   a, (anim_cy1)
+    sub  20
+    ld   (sba_y1), a
+    ld   a, (anim_cy2)
+    sub  20
+    ld   (sba_y2), a
     ld   hl, letter_sprites
-    ld   (blt_spr), hl
-    ld   hl, sprite_blit_byte
-    ld   (baa_col_ptr), hl
-    ld   b, 19
+    ld   (sba_spr), hl
 
+    ld   b, 40
 baa_outer:
     push bc
 
-    ; Starting screen_y = cy - 20  (B>=11 = line1, else line2)
-    ld   a, b
-    cp   11
-    jr   c, baa_line2
-    ld   a, (anim_cy1)
-    jr   baa_got_cy
-baa_line2:
-    ld   a, (anim_cy2)
-baa_got_cy:
-    sub  20
-    ld   (blt_scy), a
-
-    ; Blit column for this letter
-    ld   hl, (baa_col_ptr)
-    ld   a, (hl)
-    inc  hl
-    ld   (baa_col_ptr), hl
-    ld   (blt_col), a
-
-    ; 40 rows
-    ld   b, 40
-baa_row:
-    push bc
-
-    ld   a, (blt_scy)
-    cp   192            ; clip (handles negative stored as >191)
-    jr   nc, baa_skip
-
-    ; HL = row_addr[screen_y]
+    ; Row address for line1
+    ld   a, (sba_y1)
+    cp   192
+    jr   nc, baa_l1_row_off
     ld   l, a
     ld   h, 0
     add  hl, hl
@@ -433,71 +422,359 @@ baa_row:
     add  hl, bc
     ld   c, (hl)
     inc  hl
-    ld   b, (hl)        ; BC = screen row base address
-
-    ; BC += blt_col
-    ld   a, (blt_col)
-    add  a, c
-    ld   c, a
-    jr   nc, baa_nc
-    inc  b
-baa_nc:
-    ; Load sprite ptr, set HL=screen addr, OR 4 bytes
-    ld   hl, (blt_spr)
-    ex   de, hl         ; DE = sprite ptr
+    ld   b, (hl)
     ld   h, b
-    ld   l, c           ; HL = screen byte address
+    ld   l, c
+    ld   (sba_scr1), hl
+    jr   baa_l1_row_done
+baa_l1_row_off:
+    ld   hl, 0
+    ld   (sba_scr1), hl
+baa_l1_row_done:
 
+    ; Row address for line2
+    ld   a, (sba_y2)
+    cp   192
+    jr   nc, baa_l2_row_off
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c
+    ld   (sba_scr2), hl
+    jr   baa_l2_row_done
+baa_l2_row_off:
+    ld   hl, 0
+    ld   (sba_scr2), hl
+baa_l2_row_done:
+
+    ; Reset col ptr and load sprite ptr for this row into DE
+    ld   hl, sprite_blit_byte
+    ld   (sba_colp), hl
+    ld   hl, (sba_spr)
+    ex   de, hl             ; DE = sprite ptr for letter 0 at this row
+
+    ; Line1: letters 0-8 (9 letters, anim_cy1)
+    ld   hl, (sba_scr1)
+    ld   a, h
+    or   l
+    jr   z, baa_skip_l1
+
+    ld   b, 9
+baa_l1_ltr:
+    ld   hl, (sba_colp)
+    ld   a, (hl)
+    inc  hl
+    ld   (sba_colp), hl
+    ld   hl, (sba_scr1)
+    add  a, l
+    ld   l, a
+    jr   nc, baa_nc1
+    inc  h
+baa_nc1:
     ld   a, (de)
     inc  de
     or   (hl)
     ld   (hl), a
     inc  hl
-
     ld   a, (de)
     inc  de
     or   (hl)
     ld   (hl), a
     inc  hl
-
     ld   a, (de)
     inc  de
     or   (hl)
     ld   (hl), a
     inc  hl
-
     ld   a, (de)
     inc  de
     or   (hl)
     ld   (hl), a
-
-    ; Save advanced sprite ptr (DE=sprite+4) back via swap
+    ld   hl, 156
+    add  hl, de
     ex   de, hl
-    ld   (blt_spr), hl
-    jr   baa_next
+    djnz baa_l1_ltr
+    jr   baa_after_l1
 
-baa_skip:
-    ; Advance sprite ptr past 4 bytes without blitting
-    ld   hl, (blt_spr)
-    inc  hl
-    inc  hl
-    inc  hl
-    inc  hl
-    ld   (blt_spr), hl
+baa_skip_l1:
+    ld   hl, (sba_colp)     ; advance col ptr past 9 line1 entries
+    ld   bc, 9
+    add  hl, bc
+    ld   (sba_colp), hl
+    ld   hl, 1440           ; 9 * 160 — advance DE to letter 9
+    add  hl, de
+    ex   de, hl
 
-baa_next:
-    ld   hl, blt_scy
-    inc  (hl)           ; advance screen_y
+baa_after_l1:
+
+    ; Line2: letters 9-18 (10 letters, anim_cy2)
+    ld   hl, (sba_scr2)
+    ld   a, h
+    or   l
+    jr   z, baa_skip_l2
+
+    ld   b, 10
+baa_l2_ltr:
+    ld   hl, (sba_colp)
+    ld   a, (hl)
+    inc  hl
+    ld   (sba_colp), hl
+    ld   hl, (sba_scr2)
+    add  a, l
+    ld   l, a
+    jr   nc, baa_nc2
+    inc  h
+baa_nc2:
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    ld   hl, 156
+    add  hl, de
+    ex   de, hl
+    djnz baa_l2_ltr
+    jr   baa_row_next
+
+baa_skip_l2:
+    ld   hl, 1600           ; 10 * 160
+    add  hl, de
+    ex   de, hl
+
+baa_row_next:
+    ; Advance sprite ptr by 4 (next row of all letters)
+    ld   hl, (sba_spr)
+    inc  hl
+    inc  hl
+    inc  hl
+    inc  hl
+    ld   (sba_spr), hl
+    ld   hl, sba_y1
+    inc  (hl)
+    ld   hl, sba_y2
+    inc  (hl)
 
     pop  bc
-    djnz baa_row
-
-    ; After 40 rows, blt_spr has advanced by 160 — correct for next letter
-    pop  bc
-    djnz baa_outer
+    dec  b
+    jp   nz, baa_outer
     ret
 
-baa_col_ptr:  DEFW 0
+; ─────────────────────────────────────────────────────────────────────────────
+; scroll_clear_blit — combined clear+blit for scroll phase (single pass per row)
+; For each of 40 rows: zero the screen row, then OR all 19 letters into it.
+; Replaces separate clear_bands + blit_all_animated calls in do_scroll.
+; The ULA never sees a blank frame; each row transitions directly old→new.
+; ─────────────────────────────────────────────────────────────────────────────
+scb_y1:   DEFB 0
+scb_y2:   DEFB 0
+scb_scr1: DEFW 0
+scb_scr2: DEFW 0
+scb_colp: DEFW 0
+scb_spr:  DEFW 0   ; sprite row ptr = letter_sprites + outer_row*4
+
+scroll_clear_blit:
+    ; Clear 5 extra rows above each band to catch trailing pixels from previous frame.
+    ; scroll_y2 has max step 4 px/frame; those rows slip above the normal cy-20 band.
+    ld   a, (anim_cy1)
+    sub  25             ; start row = cy1 - 25  (5 rows above normal band top)
+    ld   b, 5
+    call clr_fixed_band
+    ld   a, (anim_cy2)
+    sub  25
+    ld   b, 5
+    call clr_fixed_band
+
+    ld   a, (anim_cy1)
+    sub  20
+    ld   (scb_y1), a
+    ld   a, (anim_cy2)
+    sub  20
+    ld   (scb_y2), a
+    ld   hl, letter_sprites
+    ld   (scb_spr), hl
+
+    ld   b, 40
+scb_outer:
+    push bc
+
+    ; === LINE1: zero row then blit 9 letters ===
+    ld   a, (scb_y1)
+    cp   192
+    jr   nc, scb_l1_skip
+
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c
+    ld   (scb_scr1), hl
+
+    ld   d, h           ; zero 32 bytes via LDIR
+    ld   e, l
+    inc  de
+    ld   bc, 31
+    ld   (hl), 0
+    ldir
+
+    ld   hl, sprite_blit_byte
+    ld   (scb_colp), hl
+    ld   hl, (scb_spr)
+    ex   de, hl
+
+    ld   b, 9
+scb_l1_ltr:
+    ld   hl, (scb_colp)
+    ld   a, (hl)
+    inc  hl
+    ld   (scb_colp), hl
+    ld   hl, (scb_scr1)
+    add  a, l
+    ld   l, a
+    jr   nc, scb_nc1
+    inc  h
+scb_nc1:
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    ld   hl, 156
+    add  hl, de
+    ex   de, hl
+    djnz scb_l1_ltr
+    jr   scb_after_l1
+
+scb_l1_skip:
+    ; col ptr to line2 start; DE to letter 9's row data
+    ld   hl, sprite_blit_byte
+    ld   bc, 9
+    add  hl, bc
+    ld   (scb_colp), hl
+    ld   hl, (scb_spr)
+    ex   de, hl
+    ld   hl, 1440
+    add  hl, de
+    ex   de, hl
+
+scb_after_l1:
+
+    ; === LINE2: zero row then blit 10 letters ===
+    ld   a, (scb_y2)
+    cp   192
+    jr   nc, scb_l2_skip
+
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c
+    ld   (scb_scr2), hl
+
+    push de             ; save sprite ptr across LDIR (DE will be clobbered)
+    ld   d, h
+    ld   e, l
+    inc  de
+    ld   bc, 31
+    ld   (hl), 0
+    ldir
+    pop  de             ; restore sprite ptr (now at letter 9's row data)
+
+    ld   b, 10
+scb_l2_ltr:
+    ld   hl, (scb_colp)
+    ld   a, (hl)
+    inc  hl
+    ld   (scb_colp), hl
+    ld   hl, (scb_scr2)
+    add  a, l
+    ld   l, a
+    jr   nc, scb_nc2
+    inc  h
+scb_nc2:
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
+    inc  de
+    or   (hl)
+    ld   (hl), a
+    ld   hl, 156
+    add  hl, de
+    ex   de, hl
+    djnz scb_l2_ltr
+
+scb_l2_skip:
+    ld   hl, (scb_spr)
+    inc  hl
+    inc  hl
+    inc  hl
+    inc  hl
+    ld   (scb_spr), hl
+    ld   hl, scb_y1
+    inc  (hl)
+    ld   hl, scb_y2
+    inc  (hl)
+
+    pop  bc
+    dec  b
+    jp   nz, scb_outer
+    ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; clear_bands — zero only the 40 pixel rows occupied by each sprite line
@@ -605,6 +882,17 @@ s16_skip:
 ; Uses: A, B, C, D, HL, DE, F, stack
 ; ─────────────────────────────────────────────────────────────────────────────
 rotate_point:
+    ; Fast path: sin=0 means identity rotation — skip all four multiplies
+    ld   a, (spin_sin)
+    or   a
+    jr   nz, rp_full
+    ld   a, (rot_dx)
+    ld   (rot_new_dx), a
+    ld   a, (rot_dy)
+    ld   (rot_new_dy), a
+    ret
+
+rp_full:
     ; new_dx = (dx*cos - dy*sin) >> 7
     ld   a, (rot_dx)
     ld   b, a

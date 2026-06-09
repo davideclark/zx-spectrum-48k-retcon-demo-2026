@@ -14,6 +14,10 @@ SPIN_STEP     EQU 512
 ; band margin (3 rows) supports up to ~3.0x; go higher only with a wider margin.
 ORB_STEP      EQU 640
 
+; Rainbow scroll rate: the colour bands advance one row every RAINBOW_RATE-th
+; 50 Hz interrupt. 1 = 50 rows/s (fast), 2 = 25 rows/s, 3 ~= 17 rows/s.
+RAINBOW_RATE  EQU 6
+
 anim_frame:   DEFB 0
 phase:        DEFB 0   ; 0=scroll, 1=spin, 2=orbit
 spin_acc:     DEFW 0   ; 8.8 fixed-point position within spin_ang (spin phase)
@@ -56,12 +60,14 @@ start:
         ; Scatter the starfield and draw it on the live screen
         call    init_starfield
 
+        ; Install the 50 Hz interrupt that drives the rainbow independently
+        call    setup_im2
+
         xor     a
         ld      (anim_frame), a
 
 main_loop:
         halt
-        call    draw_rainbow        ; scroll the colour bands (attribute RAM only)
         call    twinkle_step        ; blink a few stars
         ld      a, (phase)
         or      a

@@ -28,14 +28,18 @@ phases over a twinkling starfield, washed with scrolling rainbow colour.
 - **Fast orbit.** The sprite blitter uses incremental next-line addressing, and
   the clear/copy band is sized dynamically to the current orbit radius.
 - **Rainbow colour wash.** An attribute-plane effect (`0x5800`): a per-row colour
-  pattern is rotated each frame so the colours flow through the letter pixels.
-  Independent of the pixel pipeline, so it costs almost nothing.
+  pattern is rotated so the colours flow through the letter pixels. It runs from a
+  custom **IM2 50 Hz interrupt** (`setup_im2`/`isr`), independent of the
+  variable-length main-loop frame, so the wash holds a steady speed even when the
+  spin phase is working hard. Touches only attribute RAM, so it costs almost
+  nothing and can't disturb the pixel render.
 - **Starfield.** A scattered field of stars drawn behind everything,
   re-composited into the shadow band each frame so the letters don't erase them,
   with a few stars twinkling on/off. They pick up the rainbow colours for free.
 
-Two pacing dials live at the top of `src/main.asm`: `SPIN_STEP` (spin speed) and
-`ORB_STEP` (orbit speed), both 8.8 fixed-point steps where `256` = 1.0×.
+Pacing dials at the top of `src/main.asm`: `SPIN_STEP` (spin speed) and `ORB_STEP`
+(orbit speed), both 8.8 fixed-point where `256` = 1.0×; `RAINBOW_RATE` (colour
+wash — advance one row every Nth interrupt).
 
 ## Build
 

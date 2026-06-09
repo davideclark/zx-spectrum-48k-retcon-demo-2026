@@ -1811,6 +1811,55 @@ rainbow_attr:
     DEFB 0x42,0x46,0x44,0x45,0x41,0x43
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; setup_im2 — install an IM2 interrupt so the rainbow runs at a steady 50 Hz,
+; decoupled from the (variable-length) main-loop frame. Classic 48K setup: a
+; 257-byte vector table of identical bytes at 0xD800 (just above the shadow
+; buffer) makes the vector resolve to 0xD8D8 for any floating-bus value; a JP to
+; the handler is poked there.
+; ─────────────────────────────────────────────────────────────────────────────
+setup_im2:
+    di
+    ld   hl, 0xD800         ; fill 0xD800..0xD900 (257 bytes) with 0xD8
+    ld   de, 0xD801
+    ld   bc, 256
+    ld   (hl), 0xD8
+    ldir
+    ld   a, 0xC3            ; JP opcode at 0xD8D8
+    ld   (0xD8D8), a
+    ld   hl, isr
+    ld   (0xD8D9), hl       ; -> isr
+    ld   a, 0xD8
+    ld   i, a
+    im   2
+    ei
+    ret
+
+; isr — 50 Hz interrupt handler. Advances the rainbow every RAINBOW_RATE-th
+; interrupt. Only touches attribute RAM (0x5800) and the saved registers, so it
+; can't disturb the pixel render in progress.
+isr:
+    push af
+    push bc
+    push de
+    push hl
+    ld   a, (rainbow_div)
+    inc  a
+    cp   RAINBOW_RATE
+    jr   c, isr_no_rb
+    call draw_rainbow
+    xor  a
+isr_no_rb:
+    ld   (rainbow_div), a
+    pop  hl
+    pop  de
+    pop  bc
+    pop  af
+    ei
+    reti
+
+rainbow_div: DEFB 0
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; clear_orbit_bands — clear the full orbit extent for both letter lines.
 ; Covers anim_cy1 ± 58 rows and anim_cy2 ± 58 rows (116 rows each).
 ; Handles negative start row via unsigned cp 192 skip in clr_fixed_band.

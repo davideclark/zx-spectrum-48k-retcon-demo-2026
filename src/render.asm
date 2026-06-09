@@ -1081,13 +1081,10 @@ clrb_loop:
     ld   a, (scr_or)    ; redirect to shadow buffer when scr_or = 0x80
     or   d
     ld   d, a
-    ; zero 32 bytes via LD(HL),0 + LDIR
+    ; zero 32 bytes (unrolled — see zero_row_32)
     ld   h, d
     ld   l, e
-    ld   (hl), 0
-    inc  de             ; DE = base + 1
-    ld   bc, 31
-    ldir
+    call zero_row_32
 clrb_skip:
     pop  bc
     pop  af
@@ -1546,13 +1543,118 @@ cpb_loop:
     ld   a, h
     or   0x80
     ld   h, a           ; HL = shadow address (source)
-    ld   bc, 32
-    ldir                ; copy 32 bytes shadow -> screen
+    call copy_row_32    ; copy 32 bytes shadow -> screen (unrolled)
 cpb_skip:
     pop  bc
     pop  af
     inc  a
     djnz cpb_loop
+    ret
+
+; copy_row_32 — copy 32 bytes HL -> DE, fully unrolled (16T/byte vs LDIR's 21T).
+; Clobbers A?no; uses BC (LDI decrements it) — callers don't rely on BC across it.
+copy_row_32:
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ldi
+    ret
+
+; zero_row_32 — zero 32 bytes from HL, unrolled. HL must be 32-byte aligned within
+; its page (screen/shadow row bases are), so inc l never carries. Clobbers A, HL.
+zero_row_32:
+    xor  a
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
+    inc  l
+    ld   (hl), a
     ret
 
 ; copy_scroll_bands — refresh both scroll lines. Window = cy-25 .. cy+19 (45 rows)

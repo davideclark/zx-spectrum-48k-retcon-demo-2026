@@ -53,12 +53,16 @@ start:
         ; Pre-render all 19 letter sprites (one-time startup cost)
         call    pre_render_all_sprites
 
+        ; Scatter the starfield and draw it on the live screen
+        call    init_starfield
+
         xor     a
         ld      (anim_frame), a
 
 main_loop:
         halt
         call    draw_rainbow        ; scroll the colour bands (attribute RAM only)
+        call    twinkle_step        ; blink a few stars
         ld      a, (phase)
         or      a
         jp      z, do_scroll
@@ -71,6 +75,7 @@ do_scroll:
         ld      a, 0x80             ; render into shadow buffer (off-screen)
         ld      (scr_or), a
         call    scroll_clear_blit
+        call    stamp_stars         ; stars into the shadow band (over the letters)
         xor     a                   ; back to screen addressing for the copy
         ld      (scr_or), a
         call    copy_scroll_bands   ; shadow -> screen (only write the ULA sees)
@@ -94,6 +99,7 @@ do_spin:
         ld      a, 0x80             ; render into shadow buffer (off-screen)
         ld      (scr_or), a
         call    clear_bands
+        call    stamp_stars         ; stars into the shadow band, under the letters
         call    draw_spin_frame
         xor     a                   ; back to screen addressing
         ld      (scr_or), a
@@ -162,6 +168,7 @@ lookup_scroll_y:
         ret
 
         INCLUDE "src/render.asm"
+        INCLUDE "src/stars.asm"
         INCLUDE "src/font.asm"
         INCLUDE "src/tables.asm"
 

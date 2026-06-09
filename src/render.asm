@@ -2001,6 +2001,8 @@ draw_orbit_frame:
     ld   a, (orb_bstart)
     call clr_fixed_band
 
+    call stamp_stars        ; stars into the shadow band, under the letters
+
     ; Blit all 19 letters at their orbit positions into the shadow buffer.
     ld   hl, rest_pos
     ld   (dar_pos), hl

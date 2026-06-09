@@ -24,6 +24,12 @@ dar_pos:      DEFW 0
 anim_cy1:     DEFB 0
 anim_cy2:     DEFB 0
 
+; ── Render target select ─────────────────────────────────────────────────────
+; OR'd into the high byte of every computed screen address. 0x00 = live screen
+; (0x40xx), 0x80 = shadow buffer (0xC0xx). Scroll/spin render with 0x80 then the
+; copy routines move the result to the live screen; orbit leaves it 0x00.
+scr_or:       DEFB 0
+
 ; ── Sprite storage: 19 × 40 rows × 4 bytes = 3040 bytes ─────────────────────
 letter_sprites: DEFS 3040
 
@@ -41,6 +47,8 @@ rot_dy:         DEFB 0   ; raw dy offset (signed) from letter_shapes
 rot_new_dx:     DEFB 0   ; rotated dx result
 rot_new_dy:     DEFB 0   ; rotated dy result
 drl_shape_ptr:  DEFW 0   ; temp save of HL (shape ptr) across rotate_point call
+cos_prod:       DEFS 35  ; (d*spin_cos)>>7 for d=-17..17, index=d+17
+sin_prod:       DEFS 35  ; (d*spin_sin)>>7 for d=-17..17, index=d+17
 
 ; ── Orbit working vars ───────────────────────────────────────────────────────
 orb_base_angle: DEFB 0   ; increments each orbit frame; shared across all 19 letters
@@ -94,6 +102,9 @@ plot_pixel:
 pp_nc:
     ld   h, b
     ld   l, c
+    ld   a, (scr_or)    ; redirect to shadow buffer when scr_or = 0x80
+    or   h
+    ld   h, a
 
     ld   a, d
     and  7
@@ -641,6 +652,9 @@ scb_outer:
     ld   b, (hl)
     ld   h, b
     ld   l, c
+    ld   a, (scr_or)    ; redirect to shadow buffer when scr_or = 0x80
+    or   h
+    ld   h, a
     ld   (scb_scr1), hl
 
     ld   d, h           ; zero 32 bytes via LDIR
@@ -721,6 +735,9 @@ scb_after_l1:
     ld   b, (hl)
     ld   h, b
     ld   l, c
+    ld   a, (scr_or)    ; redirect to shadow buffer when scr_or = 0x80
+    or   h
+    ld   h, a
     ld   (scb_scr2), hl
 
     push de             ; save sprite ptr across LDIR (DE will be clobbered)
@@ -814,6 +831,9 @@ clrb_loop:
     ld   e, (hl)
     inc  hl
     ld   d, (hl)        ; DE = screen row base address
+    ld   a, (scr_or)    ; redirect to shadow buffer when scr_or = 0x80
+    or   d
+    ld   d, a
     ; zero 32 bytes via LD(HL),0 + LDIR
     ld   h, d
     ld   l, e
@@ -853,22 +873,52 @@ s16_a_ok:
     ld   b, a            ; B = |operand2| (0..127)
 s16_b_ok:
 
-    ; Unsigned 8×8: shift C left 8 times; for each 1-bit shifted out, add B to HL
+    ; Unsigned 8×8 multiply, unrolled 8 iterations.
+    ; add hl,de (11T) replaces manual ld a,l/add/ld l,a/inc h (~25T+loop overhead).
     ld   hl, 0
-    ld   d, 8
-s16_loop:
-    add  hl, hl          ; HL <<= 1
-    sla  c               ; C <<= 1; old bit 7 → carry
-    jr   nc, s16_skip
-    ld   a, l
-    add  a, b
-    ld   l, a
-    jr   nc, s16_nc
-    inc  h
-s16_nc:
-s16_skip:
-    dec  d
-    jr   nz, s16_loop
+    ld   d, 0
+    ld   e, b            ; DE = B (addend)
+
+    add  hl, hl
+    sla  c
+    jr   nc, s16_7
+    add  hl, de
+s16_7:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_6
+    add  hl, de
+s16_6:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_5
+    add  hl, de
+s16_5:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_4
+    add  hl, de
+s16_4:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_3
+    add  hl, de
+s16_3:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_2
+    add  hl, de
+s16_2:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_1
+    add  hl, de
+s16_1:
+    add  hl, hl
+    sla  c
+    jr   nc, s16_0
+    add  hl, de
+s16_0:
 
     ; Apply sign
     pop  af
@@ -891,76 +941,51 @@ s16_skip:
 ; Uses: A, B, C, D, HL, DE, F, stack
 ; ─────────────────────────────────────────────────────────────────────────────
 rotate_point:
-    ; Fast path: sin=0 means identity rotation — skip all four multiplies
-    ld   a, (spin_sin)
-    or   a
-    jr   nz, rp_full
+    ; new_dx = cos_prod[dx+17] - sin_prod[dy+17]
     ld   a, (rot_dx)
-    ld   (rot_new_dx), a
-    ld   a, (rot_dy)
-    ld   (rot_new_dy), a
-    ret
-
-rp_full:
-    ; new_dx = (dx*cos - dy*sin) >> 7
-    ld   a, (rot_dx)
-    ld   b, a
-    ld   a, (spin_cos)
-    call smul16          ; HL = dx * cos
-    push hl
-
-    ld   a, (rot_dy)
-    ld   b, a
-    ld   a, (spin_sin)
-    call smul16          ; HL = dy * sin
-
-    pop  de              ; DE = dx*cos
-    ld   a, e
-    sub  l
+    add  a, 17
+    ld   hl, cos_prod
+    add  a, l
     ld   l, a
+    jr   nc, rp1_nc
+    inc  h
+rp1_nc:
+    ld   d, (hl)
+
+    ld   a, (rot_dy)
+    add  a, 17
+    ld   hl, sin_prod
+    add  a, l
+    ld   l, a
+    jr   nc, rp2_nc
+    inc  h
+rp2_nc:
     ld   a, d
-    sbc  a, h
-    ld   h, a            ; HL = dx*cos - dy*sin (signed 16-bit)
-
-    ; HL >> 7 → A  (arithmetic: result = (H<<1) | (L>>7))
-    ld   a, l
-    and  0x80
-    rlca                 ; A = 1 if bit 7 of L was set, else 0
-    ld   c, a
-    ld   a, h
-    add  a, a            ; A = H<<1 (8-bit, wraps correctly for our range)
-    or   c
+    sub  (hl)
     ld   (rot_new_dx), a
 
-    ; new_dy = (dx*sin + dy*cos) >> 7
+    ; new_dy = sin_prod[dx+17] + cos_prod[dy+17]
     ld   a, (rot_dx)
-    ld   b, a
-    ld   a, (spin_sin)
-    call smul16          ; HL = dx * sin
-    push hl
+    add  a, 17
+    ld   hl, sin_prod
+    add  a, l
+    ld   l, a
+    jr   nc, rp3_nc
+    inc  h
+rp3_nc:
+    ld   d, (hl)
 
     ld   a, (rot_dy)
-    ld   b, a
-    ld   a, (spin_cos)
-    call smul16          ; HL = dy * cos
-
-    pop  de              ; DE = dx*sin
-    ld   a, l
-    add  a, e
+    add  a, 17
+    ld   hl, cos_prod
+    add  a, l
     ld   l, a
-    ld   a, h
-    adc  a, d
-    ld   h, a            ; HL = dx*sin + dy*cos (signed 16-bit)
-
-    ld   a, l
-    and  0x80
-    rlca
-    ld   c, a
-    ld   a, h
-    add  a, a
-    or   c
+    jr   nc, rp4_nc
+    inc  h
+rp4_nc:
+    ld   a, d
+    add  a, (hl)
     ld   (rot_new_dy), a
-
     ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -1068,6 +1093,54 @@ draw_spin_frame:
     xor  a
     ld   (sprite_mode), a
 
+    ; Build cos_prod[35]: cos_prod[i] = (i-17)*spin_cos >> 7, for i=0..34 (d=-17..17)
+    ld   hl, cos_prod
+    ld   c, 239          ; start value: -17 as unsigned byte (0xEF)
+    ld   b, 35
+dsf_cos_tab:
+    push bc
+    push hl
+    ld   a, (spin_cos)
+    ld   b, c            ; A=cos, B=d
+    call smul16          ; HL = cos * d
+    ld   a, l
+    and  0x80
+    rlca
+    ld   c, a
+    ld   a, h
+    add  a, a
+    or   c               ; A = result >> 7
+    pop  hl
+    ld   (hl), a
+    inc  hl
+    pop  bc
+    inc  c
+    djnz dsf_cos_tab
+
+    ; Build sin_prod[35]: sin_prod[i] = (i-17)*spin_sin >> 7
+    ld   hl, sin_prod
+    ld   c, 239
+    ld   b, 35
+dsf_sin_tab:
+    push bc
+    push hl
+    ld   a, (spin_sin)
+    ld   b, c
+    call smul16
+    ld   a, l
+    and  0x80
+    rlca
+    ld   c, a
+    ld   a, h
+    add  a, a
+    or   c
+    pop  hl
+    ld   (hl), a
+    inc  hl
+    pop  bc
+    inc  c
+    djnz dsf_sin_tab
+
     ; Reset iterators to start of shape/position tables
     ld   hl, letter_shapes
     ld   (dar_shapes), hl
@@ -1095,6 +1168,75 @@ dsf_loop:
     ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; clr_spin_letter_band — zero 6 bytes × 40 rows around spin_cx / spin_cy.
+; Covers ±20px vertically and ±24px horizontally (enough for any rotation).
+; Column capped at 26 so 6 bytes always fit within the 32-byte screen row.
+; ─────────────────────────────────────────────────────────────────────────────
+clr_spin_letter_band:
+    ld   a, (spin_cx)
+    srl  a
+    srl  a
+    srl  a               ; A = cx / 8
+    sub  2               ; A = cx/8 - 2  (start column)
+    jp   m, cslb_neg
+    cp   26
+    jr   c, cslb_col_ok
+    ld   a, 26           ; cap: bytes 26..31 fit in a 32-byte row
+    jr   cslb_col_ok
+cslb_neg:
+    xor  a
+cslb_col_ok:
+    ld   (cslb_col), a
+
+    ld   a, (spin_cy)
+    sub  20              ; first row = cy - 20
+    ld   b, 40
+cslb_loop:
+    push bc
+    push af
+    cp   192             ; unsigned: skips negative rows (stored as >191)
+    jr   nc, cslb_skip
+
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c
+
+    ld   a, (cslb_col)
+    add  a, l
+    ld   l, a
+    jr   nc, cslb_nc
+    inc  h
+cslb_nc:
+    xor  a
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+
+cslb_skip:
+    pop  af
+    inc  a
+    pop  bc
+    djnz cslb_loop
+    ret
+
+cslb_col: DEFB 0
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; clr_fixed_band — zero B screen rows starting at row A
 ; Handles off-screen rows (cp 192 unsigned check, same as clr_band_40).
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -1112,6 +1254,9 @@ cfb_loop:
     ld   e, (hl)
     inc  hl
     ld   d, (hl)
+    ld   a, (scr_or)    ; redirect to shadow buffer when scr_or = 0x80
+    or   d
+    ld   d, a
     ld   h, d
     ld   l, e
     ld   (hl), 0
@@ -1124,6 +1269,66 @@ cfb_skip:
     inc  a
     djnz cfb_loop
     ret
+
+; ─────────────────────────────────────────────────────────────────────────────
+; copy_band — copy B screen rows starting at row A from the shadow buffer to the
+; live screen. Source = row_addr[y] | 0x8000 (shadow), dest = row_addr[y].
+; This is the ONLY write the ULA sees during scroll/spin: each row goes straight
+; from old frame to new frame (no blank intermediate), so no flicker — at worst a
+; single tear line where the beam meets the copy.
+; In: A = start row, B = row count. Off-screen rows (>=192) are skipped.
+; ─────────────────────────────────────────────────────────────────────────────
+copy_band:
+cpb_loop:
+    push af
+    push bc
+    cp   192
+    jr   nc, cpb_skip
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   e, (hl)
+    inc  hl
+    ld   d, (hl)        ; DE = live screen address (dest)
+    ld   h, d
+    ld   l, e
+    ld   a, h
+    or   0x80
+    ld   h, a           ; HL = shadow address (source)
+    ld   bc, 32
+    ldir                ; copy 32 bytes shadow -> screen
+cpb_skip:
+    pop  bc
+    pop  af
+    inc  a
+    djnz cpb_loop
+    ret
+
+; copy_scroll_bands — refresh both scroll lines. Window = cy-25 .. cy+19 (45 rows)
+; matches scroll_clear_blit's cleared+rendered extent (incl. the 5-row ghost pre-
+; clear), so the previous frame's letters are always fully overwritten.
+copy_scroll_bands:
+    ld   a, (anim_cy1)
+    sub  25
+    ld   b, 45
+    call copy_band
+    ld   a, (anim_cy2)
+    sub  25
+    ld   b, 45
+    jp   copy_band
+
+; copy_spin_bands — refresh both spin lines (40-row bands, cy-20 .. cy+19).
+copy_spin_bands:
+    ld   a, (anim_cy1)
+    sub  20
+    ld   b, 40
+    call copy_band
+    ld   a, (anim_cy2)
+    sub  20
+    ld   b, 40
+    jp   copy_band
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; clear_orbit_bands — clear the full orbit extent for both letter lines.
@@ -1173,6 +1378,9 @@ ocl_outer:
     ld   b, (hl)
     ld   h, b
     ld   l, c
+    ld   a, (scr_or)    ; 0x00 during orbit (live screen); kept uniform
+    or   h
+    ld   h, a
 
     ld   a, (ocb_prev_col)
     add  a, l
@@ -1223,6 +1431,9 @@ obn_outer:
     ld   b, (hl)
     ld   h, b
     ld   l, c
+    ld   a, (scr_or)    ; 0x00 during orbit (live screen); kept uniform
+    or   h
+    ld   h, a
 
     ld   a, (ocb_new_col)
     add  a, l

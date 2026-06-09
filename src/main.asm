@@ -18,10 +18,14 @@ ORB_STEP      EQU 640
 ; 50 Hz interrupt. 1 = 50 rows/s (fast), 2 = 25 rows/s, 3 ~= 17 rows/s.
 RAINBOW_RATE  EQU 6
 
+; Orbit fade-out: number of dissolve frames before the demo loops back to scroll.
+FADE_FRAMES   EQU 12
+
 anim_frame:   DEFB 0
-phase:        DEFB 0   ; 0=scroll, 1=spin, 2=orbit
+phase:        DEFB 0   ; 0=scroll, 1=spin, 2=orbit, 3=fade-out
 spin_acc:     DEFW 0   ; 8.8 fixed-point position within spin_ang (spin phase)
 orb_acc:      DEFW 0   ; 8.8 fixed-point frame index for the orbit phase
+fade_count:   DEFB 0   ; remaining dissolve frames (fade phase)
 
 start:
         ld      sp, 0xFF00
@@ -74,7 +78,9 @@ main_loop:
         jp      z, do_scroll
         cp      1
         jp      z, do_spin
-        jp      do_orbit
+        cp      2
+        jp      z, do_orbit
+        jp      do_fade
 
 do_scroll:
         call    lookup_scroll_y
@@ -149,12 +155,26 @@ do_orbit:
         ld      (anim_frame), a
         jp      main_loop
 orbit_done:
+        ld      a, 3                ; phase 3 = fade-out (dissolve the letters)
+        ld      (phase), a
+        ld      a, FADE_FRAMES
+        ld      (fade_count), a
+        jp      main_loop
+
+do_fade:
+        call    dissolve_step       ; thin out the letter pixels on the live screen
+        ld      a, (fade_count)
+        dec     a
+        ld      (fade_count), a
+        jp      z, fade_done
+        jp      main_loop
+fade_done:
+        call    clear_orbit_bands   ; remove any leftover pixels in the orbit region
         xor     a
         ld      (anim_frame), a     ; reset frame counter
         ld      (phase), a          ; phase = 0 (scroll)
         ld      hl, 0               ; orb_acc = 0 for next loop
         ld      (orb_acc), hl
-        call    clear_orbit_bands   ; wipe orbit pixels before scroll starts
         jp      main_loop
 
 lookup_scroll_y:

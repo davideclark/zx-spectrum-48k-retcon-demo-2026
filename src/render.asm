@@ -1860,6 +1860,74 @@ isr_no_rb:
 rainbow_div: DEFB 0
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; dissolve_step — one frame of the orbit fade-out. ANDs the two rest letter bands
+; (rows 36..75 and 101..140) on the live screen with a pseudo-random mask of ~0.75
+; density (mask = lfsrD OR lfsrE). Each frame removes ~a quarter of the remaining
+; set pixels, so the letters dissolve away over ~12 frames. Cleared pixels stay
+; cleared (AND is monotonic). Stars in the bands dissolve with them.
+; ─────────────────────────────────────────────────────────────────────────────
+dsolve_seed: DEFW 0xB37E   ; two 8-bit LFSR states (low = D, high = E)
+
+dissolve_step:
+    ld   a, (dsolve_seed)
+    ld   d, a
+    ld   a, (dsolve_seed+1)
+    ld   e, a
+    ld   a, 36
+    ld   c, 40
+    call dissolve_band
+    ld   a, 101
+    ld   c, 40
+    call dissolve_band
+    ld   a, d
+    ld   (dsolve_seed), a
+    ld   a, e
+    ld   (dsolve_seed+1), a
+    ret
+
+; dissolve_band — AND C rows of 32 bytes from row A on the live screen with the
+; running LFSR mask. D/E carry the two LFSR states in and out.
+dissolve_band:
+dband_row:
+    push af
+    push bc
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)
+    ld   h, b
+    ld   l, c           ; HL = live screen row base
+    ld   b, 32
+dband_byte:
+    ld   a, d           ; advance LFSR D (x^8+x^4+x^3+x^2+1)
+    add  a, a
+    jr   nc, db_d
+    xor  0x1D
+db_d:
+    ld   d, a
+    ld   a, e           ; advance LFSR E (different tap)
+    add  a, a
+    jr   nc, db_e
+    xor  0x2D
+db_e:
+    ld   e, a
+    or   d              ; mask = D or E (~0.75 density)
+    and  (hl)           ; clear the pixels the mask drops
+    ld   (hl), a
+    inc  hl
+    djnz dband_byte
+    pop  bc
+    pop  af
+    inc  a
+    dec  c
+    jr   nz, dband_row
+    ret
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; clear_orbit_bands — clear the full orbit extent for both letter lines.
 ; Covers anim_cy1 ± 58 rows and anim_cy2 ± 58 rows (116 rows each).
 ; Handles negative start row via unsigned cp 192 skip in clr_fixed_band.

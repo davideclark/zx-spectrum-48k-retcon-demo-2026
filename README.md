@@ -13,7 +13,7 @@ phases over a twinkling starfield, washed with scrolling rainbow colour.
 3. **Orbit** — each letter spirals out from and back to its centre with a
    per-letter phase stagger.
 
-…then it loops.
+…then the letters **dissolve out** and it loops.
 
 ## Effects / techniques
 
@@ -36,10 +36,13 @@ phases over a twinkling starfield, washed with scrolling rainbow colour.
 - **Starfield.** A scattered field of stars drawn behind everything,
   re-composited into the shadow band each frame so the letters don't erase them,
   with a few stars twinkling on/off. They pick up the rainbow colours for free.
+- **Dissolve fade-out.** Since the display is 1-bit, the end-of-orbit fade is a
+  random dissolve (`dissolve_step`): the letter pixels are AND-masked away over a
+  dozen frames, keeping their rainbow colour until gone, before looping to scroll.
 
 Pacing dials at the top of `src/main.asm`: `SPIN_STEP` (spin speed) and `ORB_STEP`
 (orbit speed), both 8.8 fixed-point where `256` = 1.0×; `RAINBOW_RATE` (colour
-wash — advance one row every Nth interrupt).
+wash — advance one row every Nth interrupt); `FADE_FRAMES` (dissolve length).
 
 ## Build
 

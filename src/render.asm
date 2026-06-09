@@ -1708,6 +1708,109 @@ brt_loop:
     ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; draw_rainbow — scroll the rainbow colour bands and write them to attribute RAM.
+; rainbow_attr holds one attribute byte per character row (24). Each call rotates
+; the pattern down by one row (colours flow downward) and writes it to 0x5800,
+; 32 cells per row. INK = band colour, PAPER = black, BRIGHT = 1, so only set
+; pixels (the letters) take the colour; the background stays black. Touches only
+; attribute memory, so it's independent of the pixel pipeline / shadow buffer.
+; ─────────────────────────────────────────────────────────────────────────────
+draw_rainbow:
+    ld   a, (rainbow_attr+23)   ; rotate pattern down by one row
+    ld   hl, rainbow_attr+22
+    ld   de, rainbow_attr+23
+    ld   bc, 23
+    lddr
+    ld   (rainbow_attr), a
+
+    ld   hl, 0x5800             ; write 24 rows x 32 cells (attr RAM is contiguous)
+    ld   de, rainbow_attr
+    ld   b, 24
+draw_rb_row:
+    ld   a, (de)
+    inc  de
+    call fill_attr_row          ; fill 32 bytes at HL with A, HL += 32
+    djnz draw_rb_row
+    ret
+
+; fill_attr_row — store A into 32 consecutive bytes from HL, leaving HL at HL+32.
+; Unrolled so the per-frame attribute refresh stays cheap. Preserves A, B, DE.
+fill_attr_row:
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ld   (hl), a
+    inc  hl
+    ret
+
+; rainbow_attr — current colour (BRIGHT INK on black PAPER) for each of 24 rows.
+; Bright: red 0x42, yellow 0x46, green 0x44, cyan 0x45, blue 0x41, magenta 0x43.
+rainbow_attr:
+    DEFB 0x42,0x46,0x44,0x45,0x41,0x43
+    DEFB 0x42,0x46,0x44,0x45,0x41,0x43
+    DEFB 0x42,0x46,0x44,0x45,0x41,0x43
+    DEFB 0x42,0x46,0x44,0x45,0x41,0x43
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; clear_orbit_bands — clear the full orbit extent for both letter lines.
 ; Covers anim_cy1 ± 58 rows and anim_cy2 ± 58 rows (116 rows each).
 ; Handles negative start row via unsigned cp 192 skip in clr_fixed_band.

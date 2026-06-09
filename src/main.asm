@@ -58,6 +58,7 @@ start:
 
 main_loop:
         halt
+        call    draw_rainbow        ; scroll the colour bands (attribute RAM only)
         ld      a, (phase)
         or      a
         jp      z, do_scroll

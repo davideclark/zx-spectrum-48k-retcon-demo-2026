@@ -6,7 +6,7 @@
 ; Spin angular speed. spin_acc is an 8.8 fixed-point index into spin_ang; the
 ; integer (high) byte selects the frame. SPIN_STEP is how far the angle advances
 ; per displayed frame: 256 = 1.0x (original), 384 = 1.5x, 512 = 2.0x. Tune here.
-SPIN_STEP     EQU 768
+SPIN_STEP     EQU 512
 
 anim_frame:   DEFB 0
 phase:        DEFB 0   ; 0=scroll, 1=spin, 2=orbit

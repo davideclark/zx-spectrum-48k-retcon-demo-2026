@@ -330,6 +330,199 @@ dl_skip_y:
     jr   dl_loop
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; draw_line_fast — Bresenham into the SHADOW buffer with INCREMENTAL addressing.
+; Spin-only line drawer. Instead of recomputing the screen address per pixel, it
+; maintains HL = current shadow byte pointer and dlf_mask = current bit mask, and
+; updates them as the line walks: an X step rotates the mask (advancing the byte
+; on wrap); a Y step uses dlf_down_hl / dlf_up_hl (the standard Spectrum
+; next-line arithmetic). D=x, E=y are still tracked only for the endpoint test.
+; In: D=x1, E=y1, B=x2, C=y2.  Letters stay on-screen (y 39..138, x<256), so no
+; per-pixel bounds checks are needed.
+; ─────────────────────────────────────────────────────────────────────────────
+dlf_x2:    DEFB 0
+dlf_y2:    DEFB 0
+dlf_dx:    DEFB 0
+dlf_dy:    DEFB 0
+dlf_err:   DEFB 0       ; signed 8-bit (|dx|,|dy| <= ~40 keeps it in range)
+dlf_xleft: DEFB 0       ; 1 = x decreasing (mask rotates left)
+dlf_yup:   DEFB 0       ; 1 = y decreasing (use dlf_up_hl)
+dlf_mask:  DEFB 0       ; current pixel bit mask (0x80 >> (x&7))
+
+draw_line_fast:
+    ld   a, b
+    ld   (dlf_x2), a
+    ld   a, c
+    ld   (dlf_y2), a
+
+    ; dx = |x2-x1|, x direction
+    ld   a, b
+    sub  d
+    jr   nc, dlf_dxpos
+    neg
+    ld   (dlf_dx), a
+    ld   a, 1
+    ld   (dlf_xleft), a
+    jr   dlf_dxdone
+dlf_dxpos:
+    ld   (dlf_dx), a
+    xor  a
+    ld   (dlf_xleft), a
+dlf_dxdone:
+
+    ; dy = |y2-y1|, y direction
+    ld   a, c
+    sub  e
+    jr   nc, dlf_dypos
+    neg
+    ld   (dlf_dy), a
+    ld   a, 1
+    ld   (dlf_yup), a
+    jr   dlf_dydone
+dlf_dypos:
+    ld   (dlf_dy), a
+    xor  a
+    ld   (dlf_yup), a
+dlf_dydone:
+
+    ; err = dx - dy
+    ld   a, (dlf_dx)
+    ld   c, a
+    ld   a, (dlf_dy)
+    ld   b, a
+    ld   a, c
+    sub  b
+    ld   (dlf_err), a
+
+    ; HL = shadow byte address of (x1,y1); dlf_mask = 0x80 >> (x1&7)
+    ld   a, e
+    ld   l, a
+    ld   h, 0
+    add  hl, hl
+    ld   bc, row_addr_shadow
+    add  hl, bc
+    ld   a, (hl)
+    inc  hl
+    ld   h, (hl)
+    ld   l, a               ; HL = shadow row base
+    ld   a, d
+    srl  a
+    srl  a
+    srl  a                  ; A = x1 / 8
+    add  a, l
+    ld   l, a
+    jr   nc, dlf_p0
+    inc  h
+dlf_p0:
+    push hl                 ; save byte ptr while we look up the mask
+    ld   a, d
+    and  7
+    ld   hl, bit_tab
+    add  a, l
+    ld   l, a
+    jr   nc, dlf_m0
+    inc  h
+dlf_m0:
+    ld   a, (hl)
+    ld   (dlf_mask), a
+    pop  hl                 ; HL = shadow byte ptr
+
+dlf_loop:
+    ld   a, (dlf_mask)
+    or   (hl)
+    ld   (hl), a            ; plot
+
+    ld   a, (dlf_x2)
+    cp   d
+    jr   nz, dlf_cont
+    ld   a, (dlf_y2)
+    cp   e
+    ret  z
+
+dlf_cont:
+    ld   a, (dlf_err)
+    add  a, a
+    ld   b, a               ; B = 2*err (kept across both tests)
+
+    ; X step?  (dy + e2) >= 0
+    ld   a, (dlf_dy)
+    add  a, b
+    jp   m, dlf_skipx
+    ld   a, (dlf_dy)        ; err -= dy
+    ld   c, a
+    ld   a, (dlf_err)
+    sub  c
+    ld   (dlf_err), a
+    ld   a, (dlf_xleft)
+    or   a
+    jr   nz, dlf_xleftstep
+    inc  d                  ; x += 1, mask >>= 1
+    ld   a, (dlf_mask)
+    rrca
+    ld   (dlf_mask), a
+    jr   nc, dlf_skipx
+    inc  hl                 ; mask wrapped 0x01->0x80: next byte
+    jr   dlf_skipx
+dlf_xleftstep:
+    dec  d                  ; x -= 1, mask <<= 1
+    ld   a, (dlf_mask)
+    rlca
+    ld   (dlf_mask), a
+    jr   nc, dlf_skipx
+    dec  hl                 ; mask wrapped 0x80->0x01: prev byte
+dlf_skipx:
+
+    ; Y step?  (dx - e2) >= 0   (B still = e2)
+    ld   a, (dlf_dx)
+    sub  b
+    jp   m, dlf_skipy
+    ld   a, (dlf_dx)        ; err += dx
+    ld   c, a
+    ld   a, (dlf_err)
+    add  a, c
+    ld   (dlf_err), a
+    ld   a, (dlf_yup)
+    or   a
+    jr   nz, dlf_yupstep
+    inc  e                  ; y += 1
+    call dlf_down_hl
+    jr   dlf_skipy
+dlf_yupstep:
+    dec  e                  ; y -= 1
+    call dlf_up_hl
+dlf_skipy:
+    jp   dlf_loop
+
+; dlf_down_hl — move HL down one pixel line (standard Spectrum next-line).
+dlf_down_hl:
+    inc  h
+    ld   a, h
+    and  7
+    ret  nz
+    ld   a, l
+    add  a, 0x20
+    ld   l, a
+    ret  c
+    ld   a, h
+    sub  8
+    ld   h, a
+    ret
+
+; dlf_up_hl — move HL up one pixel line (reverse of dlf_down_hl).
+dlf_up_hl:
+    ld   a, h
+    dec  h
+    and  7
+    ret  nz
+    ld   a, l
+    sub  0x20
+    ld   l, a
+    ret  c
+    ld   a, h
+    add  a, 8
+    ld   h, a
+    ret
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; draw_letter_kernel
 ; In: D=cx, E=cy; uses/advances dar_shapes
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -1103,7 +1296,7 @@ drl_segs:
     ld   b, (hl)
     inc  hl
     ld   c, (hl)
-    call draw_line
+    call draw_line_fast          ; incremental-addressing line drawer (shadow)
     pop  hl
     inc  hl
     inc  hl

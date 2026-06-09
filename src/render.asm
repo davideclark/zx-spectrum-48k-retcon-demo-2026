@@ -33,6 +33,11 @@ scr_or:       DEFB 0
 ; ── Sprite storage: 19 × 40 rows × 4 bytes = 3040 bytes ─────────────────────
 letter_sprites: DEFS 3040
 
+; ── Shadow row-address table: row_addr with bit 15 set (points into 0xC0xx). ──
+; Built once at startup (build_shadow_row_table) so plot_screen_fast needs no
+; per-pixel OR to redirect into the shadow buffer.
+row_addr_shadow: DEFS 384   ; 192 entries × 2 bytes
+
 ; ── Blit working vars ─────────────────────────────────────────────────────────
 bos_screen_y:   DEFB 0
 bos_blit_col:   DEFB 0
@@ -187,6 +192,50 @@ psp_done:
     ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
+; plot_screen_fast — OR one pixel directly into the SHADOW buffer.
+; Spin's hot-loop plotter, reached via the self-modified call in draw_line.
+; Drops two per-pixel costs of plot_pixel: the sprite-mode branch (only needed by
+; the one-time pre-render) and the scr_or redirect (folded into row_addr_shadow,
+; whose entries are already row_addr | 0x8000). Preserves D,E (current point).
+; In: D=x, E=y.
+; ─────────────────────────────────────────────────────────────────────────────
+plot_screen_fast:
+    ld   a, e
+    cp   192
+    ret  nc
+    ld   h, 0
+    ld   l, e
+    add  hl, hl
+    ld   bc, row_addr_shadow
+    add  hl, bc
+    ld   c, (hl)
+    inc  hl
+    ld   b, (hl)         ; BC = shadow row base address
+    ld   a, d
+    srl  a
+    srl  a
+    srl  a               ; A = x / 8
+    add  a, c
+    ld   c, a
+    jr   nc, psf_nc
+    inc  b
+psf_nc:
+    ld   h, b
+    ld   l, c            ; HL = shadow byte address
+    ld   a, d
+    and  7
+    ld   bc, bit_tab
+    add  a, c
+    ld   c, a
+    jr   nc, psf_nc2
+    inc  b
+psf_nc2:
+    ld   a, (bc)
+    or   (hl)
+    ld   (hl), a
+    ret
+
+; ─────────────────────────────────────────────────────────────────────────────
 ; draw_line  — Bresenham
 ; In: D=x1, E=y1, B=x2, C=y2
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -233,7 +282,10 @@ dl_sy_done:
     ld   (bres_err), a
 
 dl_loop:
-    call plot_pixel
+dl_plot_call:
+    call plot_pixel        ; operand (dl_plot_call+1) is self-modified: set to
+                           ; plot_sprite_pixel for pre-render, plot_screen_fast
+                           ; for spin. Avoids a per-pixel sprite-mode branch.
 
     ld   a, (bres_x2)
     cp   d
@@ -330,6 +382,8 @@ dlk_segs:
 ; pre_render_all_sprites — render all 19 letters into letter_sprites once
 ; ─────────────────────────────────────────────────────────────────────────────
 pre_render_all_sprites:
+    ld   hl, plot_sprite_pixel  ; draw_line plots into sprite buffers here
+    ld   (dl_plot_call+1), hl
     ld   hl, letter_shapes
     ld   (dar_shapes), hl
     ld   hl, rest_pos
@@ -1062,6 +1116,8 @@ drl_segs:
 ; Uses anim_frame to index spin_ang; writes directly to screen (sprite_mode=0).
 ; ─────────────────────────────────────────────────────────────────────────────
 draw_spin_frame:
+    ld   hl, plot_screen_fast    ; draw_line plots into the shadow buffer here
+    ld   (dl_plot_call+1), hl
     ; Compute angle = spin_ang[anim_frame]
     ld   a, (anim_frame)
     ld   l, a
@@ -1329,6 +1385,25 @@ copy_spin_bands:
     sub  20
     ld   b, 40
     jp   copy_band
+
+; build_shadow_row_table — fill row_addr_shadow with row_addr | 0x8000 (one-time).
+; Lets plot_screen_fast index a table that already points into the shadow buffer.
+build_shadow_row_table:
+    ld   hl, row_addr
+    ld   de, row_addr_shadow
+    ld   b, 192
+brt_loop:
+    ld   a, (hl)        ; low byte (copied unchanged)
+    ld   (de), a
+    inc  hl
+    inc  de
+    ld   a, (hl)        ; high byte | 0x80 -> 0xC0xx
+    or   0x80
+    ld   (de), a
+    inc  hl
+    inc  de
+    djnz brt_loop
+    ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; clear_orbit_bands — clear the full orbit extent for both letter lines.

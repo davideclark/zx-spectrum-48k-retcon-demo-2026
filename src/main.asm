@@ -6,7 +6,7 @@
 ; Spin angular speed. spin_acc is an 8.8 fixed-point index into spin_ang; the
 ; integer (high) byte selects the frame. SPIN_STEP is how far the angle advances
 ; per displayed frame: 256 = 1.0x (original), 384 = 1.5x, 512 = 2.0x. Tune here.
-SPIN_STEP     EQU 384
+SPIN_STEP     EQU 768
 
 anim_frame:   DEFB 0
 phase:        DEFB 0   ; 0=scroll, 1=spin, 2=orbit
@@ -39,6 +39,9 @@ start:
         ld      bc, 6143
         ld      (hl), 0
         ldir
+
+        ; Build the shadow row-address table used by plot_screen_fast.
+        call    build_shadow_row_table
 
         ; Pre-render all 19 letter sprites (one-time startup cost)
         call    pre_render_all_sprites

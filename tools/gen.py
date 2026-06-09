@@ -129,9 +129,9 @@ vals = [sb(scroll2_start + ease_in_out(f/69) * (cy2 - scroll2_start)) for f in r
 lines += defb_rows(vals)
 lines.append('')
 
-# 5. Spin angle table — sin_tab index per spin frame (easeIn = t^2, full 360 in 100 frames)
-lines += ['; spin_ang: sin_tab index for spin rotation per frame, easeIn curve', 'spin_ang:']
-vals = [round((f/99)**2 * 256) & 0xFF for f in range(100)]
+# 5. Spin angle table — sin_tab index per spin frame (linear, full 360 in 100 frames)
+lines += ['; spin_ang: sin_tab index for spin rotation per frame, linear ramp', 'spin_ang:']
+vals = [round((f/99) * 256) & 0xFF for f in range(100)]
 lines += defb_rows(vals)
 lines.append('')
 

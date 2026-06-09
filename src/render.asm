@@ -57,7 +57,9 @@ sin_prod:       DEFS 35  ; (d*spin_sin)>>7 for d=-17..17, index=d+17
 
 ; ── Orbit working vars ───────────────────────────────────────────────────────
 orb_base_angle: DEFB 0   ; increments each orbit frame; shared across all 19 letters
-orb_radius:     DEFB 0   ; orb_scale[frame] + 12
+orb_radius:     DEFB 0   ; orb_scale[frame] (0..26)
+orb_bstart:     DEFB 0   ; dynamic orbit band: first row  (= 34 - radius)
+orb_bcount:     DEFB 0   ; dynamic orbit band: row count   (= 109 + 2*radius)
 orb_rest_cx:    DEFB 0
 orb_rest_cy:    DEFB 0
 orb_sin:        DEFB 0   ; sin_tab[orbit_angle] for current letter
@@ -1505,10 +1507,7 @@ cfb_loop:
     ld   d, a
     ld   h, d
     ld   l, e
-    ld   (hl), 0
-    inc  de
-    ld   bc, 31
-    ldir
+    call zero_row_32    ; fast unrolled 32-byte zero
 cfb_skip:
     pop  bc
     pop  af
@@ -1681,6 +1680,14 @@ copy_spin_bands:
     ld   b, 40
     jp   copy_band
 
+; copy_orbit_bands — copy the dynamic orbit band shadow -> screen (matches the
+; band that draw_orbit_frame cleared and blitted this frame).
+copy_orbit_bands:
+    ld   a, (orb_bcount)
+    ld   b, a
+    ld   a, (orb_bstart)
+    jp   copy_band
+
 ; build_shadow_row_table — fill row_addr_shadow with row_addr | 0x8000 (one-time).
 ; Lets plot_screen_fast index a table that already points into the shadow buffer.
 build_shadow_row_table:
@@ -1774,75 +1781,74 @@ ocl_skip:
     djnz ocl_outer
     ret
 
-; orbit_blit_new_letter — OR sprite at new position (pass 2 of 2).
+; orbit_blit_new_letter — OR a letter's 40x4 sprite into the SHADOW buffer at its
+; new position, with INCREMENTAL addressing: look up the first row's address once,
+; then step down one pixel line per row via dlf_down_hl rather than a per-row
+; row_addr lookup. The column is constant for all 40 rows so it's range-checked
+; once up front; rows are always on-screen during orbit (sy in 11..165) so there's
+; no per-row sy check. Orbit always renders to shadow, so row_addr_shadow is used.
 ; In: ocb_new_col (0-28 valid, 0xFF = skip), ocb_new_sy, orb_blt_spr
 ; Out: DE = orb_blt_spr + 160
 orbit_blit_new_letter:
     ld   hl, (orb_blt_spr)
     ex   de, hl             ; DE = sprite ptr
 
-    ld   b, 40
-obn_outer:
-    push bc
     ld   a, (ocb_new_col)
-    cp   29
-    jr   nc, obn_skip
-    ld   a, (ocb_new_sy)
-    cp   192
-    jr   nc, obn_skip
+    cp   29                 ; 0xFF (or any >=29) = off-screen: skip whole letter
+    jr   nc, obn_whole_skip
+    ld   c, a               ; C = col (constant for all rows)
 
+    ld   a, (ocb_new_sy)    ; HL = shadow byte address of the first sprite row
     ld   l, a
     ld   h, 0
     add  hl, hl
-    ld   bc, row_addr
-    add  hl, bc
-    ld   c, (hl)
+    push de                 ; protect sprite ptr (need DE for the table base)
+    ld   de, row_addr_shadow
+    add  hl, de
+    ld   e, (hl)
     inc  hl
-    ld   b, (hl)
-    ld   h, b
-    ld   l, c
-    ld   a, (scr_or)    ; 0x00 during orbit (live screen); kept uniform
-    or   h
-    ld   h, a
-
-    ld   a, (ocb_new_col)
+    ld   d, (hl)
+    ld   h, d
+    ld   l, e               ; HL = shadow row base
+    pop  de                 ; DE = sprite ptr
+    ld   a, c
     add  a, l
     ld   l, a
-    jr   nc, obn_nc
+    jr   nc, obn_col_nc
     inc  h
-obn_nc:
-    ld   a, (de)
-    inc  de
-    or   (hl)
-    ld   (hl), a
-    inc  hl
-    ld   a, (de)
-    inc  de
-    or   (hl)
-    ld   (hl), a
-    inc  hl
-    ld   a, (de)
-    inc  de
-    or   (hl)
-    ld   (hl), a
-    inc  hl
-    ld   a, (de)
-    inc  de
-    or   (hl)
-    ld   (hl), a
-    jr   obn_done
+obn_col_nc:
 
-obn_skip:
+    ld   b, 40
+obn_outer:
+    push hl                 ; save row-start address
+    ld   a, (de)
     inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
     inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
     inc  de
+    or   (hl)
+    ld   (hl), a
+    inc  hl
+    ld   a, (de)
     inc  de
-
-obn_done:
-    ld   hl, ocb_new_sy
-    inc  (hl)
-    pop  bc
+    or   (hl)
+    ld   (hl), a
+    pop  hl                 ; HL = row start
+    call dlf_down_hl        ; HL -> same column, next pixel row (preserves DE, B)
     djnz obn_outer
+    ret
+
+obn_whole_skip:
+    ld   hl, 160            ; advance DE past this letter's 160 sprite bytes
+    add  hl, de
+    ex   de, hl
     ret
 
 ; ─────────────────────────────────────────────────────────────────────────────
@@ -1862,31 +1868,37 @@ draw_orbit_frame:
     ld   a, (hl)
     ld   (orb_radius), a
 
-    ; ── Pass 1: clear all 19 letters' previous positions ─────────────────────
-    ; All clears happen before any blits so adjacent sprites can't erase each other.
-    ld   hl, orb_prev_col
-    ld   (orb_prev_col_ptr), hl
-    ld   hl, orb_prev_sy
-    ld   (orb_prev_sy_ptr), hl
+    ; orb_base_angle = anim_frame * 2 (mod 256). Deriving it from anim_frame rather
+    ; than incrementing keeps the orbit's revolutions fixed no matter how fast
+    ; anim_frame advances (ORB_STEP), and auto-resets when anim_frame returns to 0.
+    ld   a, (anim_frame)
+    add  a, a
+    ld   (orb_base_angle), a
 
-    ld   b, 19
-dof_clear_loop:
-    push bc
-    ld   hl, (orb_prev_col_ptr)
-    ld   a, (hl)
-    ld   (ocb_prev_col), a
-    inc  hl
-    ld   (orb_prev_col_ptr), hl
-    ld   hl, (orb_prev_sy_ptr)
-    ld   a, (hl)
-    ld   (ocb_prev_sy), a
-    inc  hl
-    ld   (orb_prev_sy_ptr), hl
-    call orbit_clear_prev_letter
-    pop  bc
-    djnz dof_clear_loop
+    ; Size the band to THIS frame's radius so small-radius frames (most of the
+    ; sequence) clear+copy far fewer rows. 3 rows of margin each side also covers
+    ; the previous frame: anim_frame can advance up to ~3 indices/frame and
+    ; orb_scale changes by at most 1 per index, so radius moves <=3 per frame.
+    ;   start = 33 - radius ; count = 111 + 2*radius
+    ld   a, (orb_radius)
+    ld   b, a
+    ld   a, 33
+    sub  b
+    ld   (orb_bstart), a
+    ld   a, b
+    add  a, a            ; 2*radius
+    add  a, 111          ; 111 + 2*radius  (max 163 at radius 26)
+    ld   (orb_bcount), a
 
-    ; ── Pass 2: compute new positions, blit, update prev arrays ──────────────
+    ; Clear the orbit band in the SHADOW buffer (scr_or = 0x80 set by the caller).
+    ; One full-width unrolled clear is cheaper than 19 per-letter column clears and
+    ; removes the adjacency problem, so no prev-position tracking is needed.
+    ld   a, (orb_bcount)
+    ld   b, a
+    ld   a, (orb_bstart)
+    call clr_fixed_band
+
+    ; Blit all 19 letters at their orbit positions into the shadow buffer.
     ld   hl, rest_pos
     ld   (dar_pos), hl
     ld   hl, orb_phase
@@ -1987,18 +1999,6 @@ dof2_col_done:
     sub  20
     ld   (ocb_new_sy), a
 
-    ; Store new col/sy into prev arrays (ready for next frame's clear pass)
-    ld   hl, (orb_prev_col_ptr)
-    ld   a, (ocb_new_col)
-    ld   (hl), a
-    inc  hl
-    ld   (orb_prev_col_ptr), hl
-    ld   hl, (orb_prev_sy_ptr)
-    ld   a, (ocb_new_sy)
-    ld   (hl), a
-    inc  hl
-    ld   (orb_prev_sy_ptr), hl
-
     call orbit_blit_new_letter
     ex   de, hl
     ld   (orb_blt_spr), hl
@@ -2006,8 +2006,4 @@ dof2_col_done:
     pop  bc
     dec  b
     jp   nz, dof_blit_loop
-
-    ld   a, (orb_base_angle)
-    add  a, 2
-    ld   (orb_base_angle), a
-    ret
+    ret                     ; orb_base_angle is derived from anim_frame at the top

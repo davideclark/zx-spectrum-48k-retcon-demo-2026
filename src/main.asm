@@ -6,11 +6,18 @@
 ; Spin angular speed. spin_acc is an 8.8 fixed-point index into spin_ang; the
 ; integer (high) byte selects the frame. SPIN_STEP is how far the angle advances
 ; per displayed frame: 256 = 1.0x (original), 384 = 1.5x, 512 = 2.0x. Tune here.
-SPIN_STEP     EQU 448
+SPIN_STEP     EQU 512
+
+; Orbit speed. orb_acc is an 8.8 fixed-point frame index (0..149); the integer
+; (high) byte feeds orb_scale (radius) and, doubled, orb_base_angle. ORB_STEP is
+; frames advanced per displayed frame: 256 = 1.0x, 512 = 2.0x, 768 = 3.0x. The
+; band margin (3 rows) supports up to ~3.0x; go higher only with a wider margin.
+ORB_STEP      EQU 640
 
 anim_frame:   DEFB 0
 phase:        DEFB 0   ; 0=scroll, 1=spin, 2=orbit
 spin_acc:     DEFW 0   ; 8.8 fixed-point position within spin_ang (spin phase)
+orb_acc:      DEFW 0   ; 8.8 fixed-point frame index for the orbit phase
 
 start:
         ld      sp, 0xFF00
@@ -105,29 +112,35 @@ spin_done:
         ld      (anim_frame), a
         ld      a, 2
         ld      (phase), a
-        call    clear_orbit_bands       ; wipe spin-drawn letters before first orbit frame
-        ld      hl, orb_prev_col        ; initialise per-letter prev arrays to 0xFF
-        ld      b, 38                   ; 19 col bytes + 19 sy bytes (consecutive)
-        ld      a, 0xFF
-spin_done_init:
-        ld      (hl), a
-        inc     hl
-        djnz    spin_done_init
+        ld      hl, 0               ; orb_acc = 0 (start of orbit)
+        ld      (orb_acc), hl
+        ; No clear needed: draw_orbit_frame clears the shadow band every frame, and
+        ; the first orbit copy overwrites the spin letters on screen.
         jp      main_loop
 
 do_orbit:
+        ld      a, 0x80             ; render orbit frame into shadow (off-screen)
+        ld      (scr_or), a
         call    draw_orbit_frame
-        ld      a, (anim_frame)
-        cp      149
-        jr      z, orbit_done
-        inc     a
+        xor     a                   ; back to screen addressing
+        ld      (scr_or), a
+        call    copy_orbit_bands    ; shadow -> screen (only write the ULA sees)
+        ; Advance the orbit by ORB_STEP (8.8 fixed point); frame index = high byte.
+        ld      hl, (orb_acc)
+        ld      de, ORB_STEP
+        add     hl, de
+        ld      (orb_acc), hl
+        ld      a, h                ; integer part = new orbit frame index
+        cp      150                 ; orb_scale has 150 entries (0..149)
+        jr      nc, orbit_done
         ld      (anim_frame), a
         jp      main_loop
 orbit_done:
         xor     a
         ld      (anim_frame), a     ; reset frame counter
         ld      (phase), a          ; phase = 0 (scroll)
-        ld      (orb_base_angle), a ; reset orbit angle for next loop
+        ld      hl, 0               ; orb_acc = 0 for next loop
+        ld      (orb_acc), hl
         call    clear_orbit_bands   ; wipe orbit pixels before scroll starts
         jp      main_loop
 
